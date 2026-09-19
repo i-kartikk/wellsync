@@ -54,6 +54,27 @@ Vercel gives you by default):
 Either way it then opens full-screen, no browser chrome, with its own
 home-screen icon — a normal-looking app.
 
+## Multiple people, one install
+
+The first time anyone opens the deployed link, they land straight in
+onboarding — "what should we call you," their body stats, activity level
+and goal. Finish it once and it's saved; refreshing or reopening the app
+goes straight to the dashboard, not back through onboarding.
+
+If a second person opens the *same* link on the *same* device (a shared
+family phone, a kiosk tablet), WellSync shows a lightweight "who's this
+for?" picker instead of overwriting the first person's data. Each name
+gets its own fully separate set of logs, goals and streaks, stored under
+its own key in `localStorage`. From Profile → Settings, anyone can
+**Switch / Log Out** to go back to that picker (their data stays put) or
+**Add / switch person** to set up someone new.
+
+This is still per-device, not a real account system — two different
+phones each get their own independent "who's this for" list, with no
+sync between them. If several people install this on their *own* phones
+from the same deployed link, they never see each other's data at all;
+the picker only shows up when multiple people share one browser.
+
 ## Files
 
 ```

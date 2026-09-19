@@ -327,8 +327,19 @@ body{perspective:1400px}
 <body>
 <div id="bg"><span></span><span></span><span></span></div>
 
+<!-- ============== WHO'S USING THIS ============== -->
+<section id="who" style="min-height:100vh;display:none;place-items:center;padding:24px 16px;position:relative;overflow:hidden">
+  <div class="card" style="max-width:420px;width:100%;padding:26px">
+    <div class="brand" style="padding:0 0 4px"><span class="mark"></span><b>WellSync</b></div>
+    <p class="script" style="font-size:19px;margin:0 0 18px">who's this for?</p>
+    <div id="who-list" style="display:grid;gap:10px;margin-bottom:14px"></div>
+    <button class="btn ghost wide" onclick="startNewPerson()">＋ Add a person</button>
+    <p class="tiny" style="margin-top:14px">Each person's meals, weight and goals stay separate — everything lives only on this device.</p>
+  </div>
+</section>
+
 <!-- ============== ONBOARDING ============== -->
-<section id="onb">
+<section id="onb" style="display:none">
   <div class="card">
     <div class="brand" style="padding:0 0 4px"><span class="mark"></span><b>WellSync</b></div>
     <p class="script" style="font-size:20px;margin:0 0 14px">a healthier you, everyday</p>
@@ -555,8 +566,9 @@ const GOALS = [
 ];
 const MEALS = ["Breakfast","Morning Snack","Lunch","Evening Snack","Dinner"];
 
-/* ---------- state ---------- */
-const KEY="wellsync.v1";
+/* ---------- state (multi-profile) ---------- */
+const REG_KEY="wellsync.profiles";
+const perKey = id => "wellsync.v1."+id;
 let S = null;
 const todayKey = (d=new Date())=>d.toISOString().slice(0,10);
 const uid = ()=>Math.random().toString(36).slice(2,10);
@@ -564,12 +576,28 @@ const uid = ()=>Math.random().toString(36).slice(2,10);
 function blank(){return{profile:null,goals:null,logs:{meals:[],water:[],exercise:[],steps:{},weight:[]},
   favs:[],chat:[],settings:{theme:"auto",units:"metric",notif:{water:true,meals:true,weigh:true}}};}
 
-function load(){
-  try{const raw=localStorage.getItem(KEY); S = raw?JSON.parse(raw):blank();}
-  catch(e){S=blank();}
+function loadRegistry(){
+  try{ const r=JSON.parse(localStorage.getItem(REG_KEY)); return r&&r.people? r : {activeId:null,people:[]}; }
+  catch(e){ return {activeId:null,people:[]}; }
+}
+function saveRegistry(){ try{localStorage.setItem(REG_KEY,JSON.stringify(REG));}catch(e){} }
+let REG = loadRegistry();
+
+function loadPerson(id){
+  try{ const raw=localStorage.getItem(perKey(id)); S = raw?JSON.parse(raw):blank(); }
+  catch(e){ S=blank(); }
   if(!S.logs) S=blank();
 }
-function save(){ try{localStorage.setItem(KEY,JSON.stringify(S));}catch(e){toast("Couldn't save — browser storage is full or blocked.");} }
+function save(){
+  if(!REG.activeId) return;
+  try{
+    localStorage.setItem(perKey(REG.activeId),JSON.stringify(S));
+    const p=REG.people.find(x=>x.id===REG.activeId);
+    if(p && S.profile && S.profile.name) p.name=S.profile.name;
+    saveRegistry();
+  }catch(e){ toast("Couldn't save — browser storage is full or blocked."); }
+}
+function pendingNewId(){ if(!REG._pending) REG._pending=uid(); return REG._pending; }
 
 /* ---------- maths (documented, all in one place) ---------- */
 // Mifflin-St Jeor BMR
@@ -677,11 +705,67 @@ function finishOnb(){
   S.profile=p;
   S.goals=targets(p,onbState.goal,+document.getElementById("o-target").value||null);
   S.logs.weight.push({id:uid(),date:todayKey(),kg:p.wt});
+
+  const id = REG._pending || uid();
+  REG.activeId = id;
+  if(!REG.people.some(x=>x.id===id)) REG.people.push({id,name:p.name,createdAt:Date.now()});
+  else REG.people.find(x=>x.id===id).name=p.name;
+  REG._pending=null;
+  saveRegistry();
   save();
-  document.getElementById("onb").style.display="none";
-  document.getElementById("app").classList.add("on");
-  go("home");
+
+  enterApp();
   toast(`Welcome, ${p.name}. Log your first meal to wake the dashboard up.`);
+}
+
+/* ============ WHO'S USING THIS (multi-profile) ============ */
+function show(el){ document.getElementById(el).style.display="grid"; }
+function hide(el){ document.getElementById(el).style.display="none"; }
+function enterApp(){
+  hide("who"); hide("onb");
+  document.getElementById("app").classList.add("on");
+  renderNav(); go("home");
+}
+function showOnboarding(freshId){
+  document.getElementById("app").classList.remove("on");
+  hide("who"); show("onb");
+  REG._pending = freshId || uid();
+  S = blank();
+  onbState = {step:0,act:"light",goal:"lose"};
+  onbGo(0);
+  renderOnbOptions();
+}
+function renderWho(){
+  document.getElementById("app").classList.remove("on");
+  hide("onb"); show("who");
+  const list=document.getElementById("who-list");
+  if(!REG.people.length){
+    list.innerHTML = `<p class="tiny" style="text-align:center;padding:10px 0">No one's set up yet — add the first person below.</p>`;
+  } else {
+    list.innerHTML = REG.people.map(pp=>`
+      <button class="menurow" style="width:100%;border:1px solid var(--line);border-radius:16px;padding:12px 14px" onclick="switchPerson('${pp.id}')">
+        <span class="ic" style="background:var(--leaf-soft);color:var(--leaf-2);font-family:'Baloo 2';font-size:16px">${pp.name[0].toUpperCase()}</span>
+        <div><b>${pp.name}</b><span>Tap to continue</span></div>
+        <span class="chev">›</span>
+      </button>`).join("");
+  }
+}
+function switchPerson(id){
+  REG.activeId=id; saveRegistry();
+  loadPerson(id);
+  if(S.profile && S.goals) enterApp();
+  else showOnboarding(id);   // registry entry exists but onboarding never finished — resume it
+}
+function startNewPerson(){ showOnboarding(); }
+function switchAccount(){ renderWho(); }
+function deleteCurrentProfile(){
+  confirmDo("Delete this person's data — meals, water, weight, everything logged?",()=>{
+    const id=REG.activeId;
+    try{localStorage.removeItem(perKey(id));}catch(e){}
+    REG.people = REG.people.filter(x=>x.id!==id);
+    REG.activeId=null; saveRegistry();
+    location.reload();
+  });
 }
 
 /* ============ NAV ============ */
@@ -1703,8 +1787,8 @@ function vProfile(){
         <div><b>Privacy & Data</b><span>Export everything as JSON</span></div><span class="chev">›</span></div>
       <div class="menurow" onclick="toast('Ask WellSync Coach, or email support@wellsync.app')"><span class="ic" style="background:var(--blue-soft)">❓</span>
         <div><b>Help & Support</b><span>Chat with the coach or reach us</span></div><span class="chev">›</span></div>
-      <div class="menurow" onclick="wipe()"><span class="ic" style="background:var(--rose-soft)">🚪</span>
-        <div><b style="color:var(--rose)">Log Out</b><span>Clears everything stored on this device</span></div><span class="chev">›</span></div>
+      <div class="menurow" onclick="switchAccount()"><span class="ic" style="background:var(--rose-soft)">🚪</span>
+        <div><b style="color:var(--rose)">Switch / Log Out</b><span>Back to the "who's this for" screen — data stays saved</span></div><span class="chev">›</span></div>
     </div>
   </div>
 
@@ -1754,9 +1838,10 @@ function vProfile(){
     <div style="display:flex;gap:10px;flex-wrap:wrap">
       <button class="btn ghost sm" onclick="exportData()">Export my data (JSON)</button>
       <button class="btn ghost sm" onclick="seedDemo()">Fill 14 days of sample data</button>
-      <button class="btn ghost sm" style="color:var(--rose);border-color:var(--rose)" onclick="wipe()">Delete everything</button>
+      <button class="btn ghost sm" style="color:var(--rose);border-color:var(--rose)" onclick="deleteCurrentProfile()">Delete my data</button>
+      <button class="btn ghost sm" onclick="switchAccount()">Add / switch person</button>
     </div>
-    <p class="tiny" style="margin-top:12px">Your logs live in this browser's storage. Clearing site data removes them, so export before you switch devices.</p>
+    <p class="tiny" style="margin-top:12px">Your logs live in this browser's storage. Clearing site data removes them, so export before you switch devices. <a href="javascript:void(0)" onclick="wipeAllProfiles()" style="color:var(--rose)">Reset this device for everyone →</a></p>
   </div>
 
   <div class="hd"><h2>How the numbers are worked out</h2></div>
@@ -1834,8 +1919,15 @@ function exportData(){
   a.download=`wellsync-${todayKey()}.json`; a.click(); URL.revokeObjectURL(a.href);
   toast("Export downloaded.");
 }
-function wipe(){ confirmDo("Delete every log, goal and profile detail?",()=>{
-  try{localStorage.removeItem(KEY);}catch(e){} location.reload(); }); }
+function wipeAllProfiles(){
+  confirmDo("Delete every person's data on this device — everyone's logs, goals, everything?",()=>{
+    try{
+      REG.people.forEach(p=>localStorage.removeItem(perKey(p.id)));
+      localStorage.removeItem(REG_KEY);
+    }catch(e){}
+    location.reload();
+  });
+}
 
 /* seed sample data so charts have something to show */
 function seedDemo(){
@@ -1872,21 +1964,26 @@ setInterval(()=>{
 },60000);
 
 /* ---------- boot ---------- */
-load();
-if(S.settings?.theme && S.settings.theme!=="auto") document.documentElement.setAttribute("data-theme",S.settings.theme);
-else document.documentElement.removeAttribute("data-theme");
 renderOnbOptions();
-if(S.profile && S.goals){
-  document.getElementById("onb").style.display="none";
-  document.getElementById("app").classList.add("on");
-  renderNav(); render();
-}else{
-  document.getElementById("o-target").addEventListener("input",previewPlan);
-  ["o-age","o-ht","o-wt","o-sex"].forEach(id=>document.getElementById(id).addEventListener("input",previewPlan));
-}
+document.getElementById("o-target").addEventListener("input",previewPlan);
+["o-age","o-ht","o-wt","o-sex"].forEach(id=>document.getElementById(id).addEventListener("input",previewPlan));
 document.addEventListener("input",e=>{ if(e.target.id==="r-s") rRender(); });
+
+if(REG.people.length===1 && REG.activeId==null) REG.activeId=REG.people[0].id;  // legacy/simple case
+if(REG.activeId){
+  loadPerson(REG.activeId);
+  if(S.settings?.theme && S.settings.theme!=="auto") document.documentElement.setAttribute("data-theme",S.settings.theme);
+  else document.documentElement.removeAttribute("data-theme");
+  if(S.profile && S.goals) enterApp();
+  else showOnboarding(REG.activeId);
+} else if(REG.people.length>0){
+  renderWho();     // several people on this device, none chosen yet
+} else {
+  showOnboarding(); // brand-new device / browser — nobody set up
+}
 </script>
 <script>
+
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("/sw.js").catch(()=>{});
