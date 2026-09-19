@@ -871,14 +871,14 @@ function waterScene(el,pct){
   const cap=new THREE.Mesh(new THREE.TorusGeometry(1.25,.08,10,40),
     new THREE.MeshStandardMaterial({color:new THREE.Color(css("--ink-2")),roughness:.4}));
   cap.rotation.x=Math.PI/2; cap.position.y=2.1; sc.add(cap);
-  const fill=Math.max(.04,Math.min(1,pct));
-  const liq=new THREE.Mesh(new THREE.CylinderGeometry(1.14,1.14,4.1*fill,36),
+  const lvl=Math.max(.04,Math.min(1,pct));
+  const liq=new THREE.Mesh(new THREE.CylinderGeometry(1.14,1.14,4.1*lvl,36),
     new THREE.MeshStandardMaterial({color:blue,roughness:.12,metalness:.45,transparent:true,opacity:.9,
       emissive:blue,emissiveIntensity:.22}));
-  liq.position.y=-2.05+4.1*fill/2; sc.add(liq);
+  liq.position.y=-2.05+4.1*lvl/2; sc.add(liq);
   const surf=new THREE.Mesh(new THREE.CircleGeometry(1.14,36),
     new THREE.MeshStandardMaterial({color:blue,transparent:true,opacity:.55,emissive:blue,emissiveIntensity:.5}));
-  surf.rotation.x=-Math.PI/2; surf.position.y=liq.position.y+4.1*fill/2; sc.add(surf);
+  surf.rotation.x=-Math.PI/2; surf.position.y=liq.position.y+4.1*lvl/2; sc.add(surf);
   const bub=[]; for(let i=0;i<14;i++){ const b=new THREE.Mesh(new THREE.SphereGeometry(.06+Math.random()*.07,8,8),
       new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:.5}));
     b.userData={s:.4+Math.random()*.9,x:(Math.random()-.5)*1.6,z:(Math.random()-.5)*1.2,y:Math.random()};
@@ -886,10 +886,10 @@ function waterScene(el,pct){
   let t=0; const S3={r,raf:0};
   (function loop(){ S3.raf=requestAnimationFrame(loop); t+=.016;
     sc.rotation.y=Math.sin(t*.4)*.35;
-    surf.position.y = liq.position.y+4.1*fill/2 + Math.sin(t*2.2)*.05;
+    surf.position.y = liq.position.y+4.1*lvl/2 + Math.sin(t*2.2)*.05;
     surf.scale.setScalar(1+Math.sin(t*1.7)*.02);
     bub.forEach(b=>{ b.userData.y+=.004*b.userData.s; if(b.userData.y>1) b.userData.y=0;
-      b.position.set(b.userData.x, -2.05 + b.userData.y*4.1*fill, b.userData.z);
+      b.position.set(b.userData.x, -2.05 + b.userData.y*4.1*lvl, b.userData.z);
       b.material.opacity=.5*(1-b.userData.y); });
     r.render(sc,cam);
   })();
@@ -2004,7 +2004,7 @@ window.addEventListener("appinstalled", () => {
   if (btn) btn.style.display = "none";
 });
 function triggerInstall(){
-  if (!deferredInstall) { toast("Use your browser's \\"Add to Home Screen\\" / \\"Install app\\" menu."); return; }
+  if (!deferredInstall) { toast(`Use your browser menu: "Add to Home Screen" or "Install app".`); return; }
   deferredInstall.prompt();
   deferredInstall.userChoice.finally(()=>{ deferredInstall = null; });
 }
