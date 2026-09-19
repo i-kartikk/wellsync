@@ -349,9 +349,9 @@ body{perspective:1400px}
       <h1>Know where your day stands.</h1>
       <p class="sub">WellSync tracks what you eat, drink and move — with an Indian kitchen built in. Four questions and you're logging.</p>
       <label class="field"><span class="lbl">What should we call you?</span><input id="o-name" placeholder="Kartik" autocomplete="given-name"></label>
-      <label class="field"><span class="lbl">Email (stays on this device)</span><input id="o-email" type="email" placeholder="you@example.com" autocomplete="email"></label>
+      <label class="field"><span class="lbl">Account email</span><input id="o-email" type="email" placeholder="you@example.com" autocomplete="email"></label>
       <button class="btn wide" onclick="onbNext(0)">Start</button>
-      <p class="tiny" style="margin-top:12px">Everything you log is stored in this browser only. No account, no server, no sharing.</p>
+      <p class="tiny" style="margin-top:12px">Your account keeps your data synchronized across your signed-in devices.</p>
     </div>
 
     <div class="step" data-step="1">
@@ -398,10 +398,87 @@ body{perspective:1400px}
 <div class="scrim" id="scrim" onclick="if(event.target===this)closeSheet()"><div class="sheet" id="sheet" role="dialog" aria-modal="true"></div></div>
 <div id="toasts" aria-live="polite"></div>
 
+
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script>
+/* ============================================================
+   WellSync Cloud — Firebase Auth + Firestore
+   Replace the values below with your Firebase Web App config.
+   Firebase web config is safe to expose; Firestore Security Rules
+   are what protect user data.
+   ============================================================ */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyCB1yvk2H4nc6XFhasXBS0lxe37g1YcWoc",
+  authDomain: "wellsync-6c43b.firebaseapp.com",
+  projectId: "wellsync-6c43b",
+  storageBucket: "wellsync-6c43b.firebasestorage.app",
+  messagingSenderId: "1088624529160",
+  appId: "1:1088624529160:web:7e9f5467a6971e576f26bd",
+  measurementId: "G-SF8YK3LHQ3"
+};
+const FIREBASE_CONFIGURED = !Object.values(FIREBASE_CONFIG).some(v => String(v).startsWith("PASTE_"));
+
+window.WellSyncCloud = {
+  configured: FIREBASE_CONFIGURED,
+  user: null,
+  db: null,
+  auth: null,
+  unsubscribe: null,
+  ready: null,
+  async init() {
+    if (!this.configured) return false;
+    if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+    this.auth = firebase.auth();
+    this.db = firebase.firestore();
+    try { await this.auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL); } catch(e) {}
+    this.ready = new Promise(resolve => {
+      this.auth.onAuthStateChanged(user => {
+        this.user = user || null;
+        if (this.unsubscribe) { this.unsubscribe(); this.unsubscribe = null; }
+        if (window.onWellSyncAuthState) window.onWellSyncAuthState(user || null);
+        resolve(user || null);
+      });
+    });
+    return this.ready;
+  },
+  signUp(email,password){ return this.auth.createUserWithEmailAndPassword(email.trim(),password); },
+  signIn(email,password){ return this.auth.signInWithEmailAndPassword(email.trim(),password); },
+  resetPassword(email){ return this.auth.sendPasswordResetEmail(email.trim()); },
+  signOut(){ return this.auth.signOut(); },
+  async getState(){
+    if (!this.user) return null;
+    const snap = await this.db.collection("users").doc(this.user.uid).get();
+    return snap.exists ? (snap.data().state || null) : null;
+  },
+  watchState(cb){
+    if (!this.user) return;
+    if (this.unsubscribe) this.unsubscribe();
+    this.unsubscribe = this.db.collection("users").doc(this.user.uid)
+      .onSnapshot(snap => cb(snap.exists ? (snap.data().state || null) : null),
+        err => window.toast && toast("Cloud sync error. Your local data is still safe."));
+  },
+  async saveState(state){
+    if (!this.user) return;
+    await this.db.collection("users").doc(this.user.uid).set({
+      state,
+      schemaVersion: 2,
+      email: this.user.email || null,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    }, {merge:true});
+  },
+  async deleteState(){
+    if (!this.user) return;
+    await this.db.collection("users").doc(this.user.uid).delete();
+  }
+};
+</script>
+
 <script>
 /* ============================================================
    NIRA — client-side health tracker
-   Storage: localStorage (per-browser). All numbers derive from logs.
+   Storage: localStorage is the offline cache; Firebase Firestore is the account source of truth when configured.
    ============================================================ */
 
 /* ---------- food database: per 100 g unless unit="pc" ---------- */
@@ -588,14 +665,80 @@ function loadPerson(id){
   catch(e){ S=blank(); }
   if(!S.logs) S=blank();
 }
-function save(){
-  if(!REG.activeId) return;
+let cloudSaveTimer=null, cloudDirty=false, cloudApplying=false, cloudWriteToken=0;
+function cacheLocal(){
   try{
-    localStorage.setItem(perKey(REG.activeId),JSON.stringify(S));
+    if(REG.activeId) localStorage.setItem(perKey(REG.activeId),JSON.stringify(S));
     const p=REG.people.find(x=>x.id===REG.activeId);
     if(p && S.profile && S.profile.name) p.name=S.profile.name;
     saveRegistry();
   }catch(e){ toast("Couldn't save — browser storage is full or blocked."); }
+}
+function save(){
+  if(!REG.activeId) return;
+  try{ cacheLocal(); }catch(e){}
+  if(window.WellSyncCloud?.configured && window.WellSyncCloud.user && !cloudApplying){
+    cloudDirty=true;
+    clearTimeout(cloudSaveTimer);
+    const token=++cloudWriteToken;
+    const snapshot=JSON.parse(JSON.stringify(S));
+    cloudSaveTimer=setTimeout(async()=>{
+      try{
+        await WellSyncCloud.saveState({...snapshot,_sync:{updatedAt:Date.now()}});
+        if(token===cloudWriteToken) cloudDirty=false;
+        cacheLocal();
+      }catch(e){ toast("Saved on this device. Cloud sync will retry when you're online."); }
+    },450);
+  }
+}
+function mergeCloudState(local, remote){
+  if(!remote) return local;
+  const out=JSON.parse(JSON.stringify(remote));
+  out.logs=out.logs||{meals:[],water:[],exercise:[],steps:{},weight:[]};
+  const ll=local?.logs||{};
+  const union=(a,b)=>{
+    const m=new Map();
+    [...(a||[]),...(b||[])].forEach(x=>{ if(x?.id!=null)m.set(String(x.id),x); });
+    return [...m.values()];
+  };
+  out.logs.meals=union(out.logs.meals,ll.meals);
+  out.logs.water=union(out.logs.water,ll.water);
+  out.logs.exercise=union(out.logs.exercise,ll.exercise);
+  out.logs.weight=union(out.logs.weight,ll.weight);
+  out.logs.steps={...(out.logs.steps||{}),...(ll.steps||{})};
+  out.favs=[...new Set([...(out.favs||[]),...(ll.favs||[])])];
+  // Chat entries may not have ids in older builds; keep the union without duplicates.
+  const chat=[...(out.chat||[]),...(ll.chat||[])];
+  out.chat=chat.filter((x,i,a)=>i===a.findIndex(y=>JSON.stringify(y)===JSON.stringify(x)));
+  return out;
+}
+async function syncFromCloud(initial=false){
+  if(!WellSyncCloud?.user) return;
+  try{
+    const cloud=await WellSyncCloud.getState();
+    if(cloud){
+      S=cloud;
+      cacheLocal();
+    }else if(S?.profile){
+      await WellSyncCloud.saveState({...S,_sync:{updatedAt:Date.now()}});
+      cloudDirty=false;
+    }
+    if(S?.profile && S?.goals) enterApp();
+  }catch(e){ toast("Cloud data couldn't be loaded. Your offline data remains available."); }
+  WellSyncCloud.watchState(remote=>{
+    if(!remote) return;
+    if(cloudDirty){
+      const merged=mergeCloudState(S,remote);
+      S=merged; cacheLocal();
+      cloudDirty=false;
+      save();
+    }else{
+      S=remote; cacheLocal();
+      if(S?.settings?.theme && S.settings.theme!=="auto") document.documentElement.setAttribute("data-theme",S.settings.theme);
+      else document.documentElement.removeAttribute("data-theme");
+      if(S?.profile && S?.goals){ enterApp(); render(); }
+    }
+  });
 }
 function pendingNewId(){ if(!REG._pending) REG._pending=uid(); return REG._pending; }
 
@@ -702,11 +845,12 @@ function previewPlan(){
 
 function finishOnb(){
   const p=readOnbProfile();
+  if(WellSyncCloud?.user?.email) p.email=WellSyncCloud.user.email;
   S.profile=p;
   S.goals=targets(p,onbState.goal,+document.getElementById("o-target").value||null);
   S.logs.weight.push({id:uid(),date:todayKey(),kg:p.wt});
 
-  const id = REG._pending || uid();
+  const id = WellSyncCloud?.user?.uid || REG._pending || uid();
   REG.activeId = id;
   if(!REG.people.some(x=>x.id===id)) REG.people.push({id,name:p.name,createdAt:Date.now()});
   else REG.people.find(x=>x.id===id).name=p.name;
@@ -757,14 +901,15 @@ function switchPerson(id){
   else showOnboarding(id);   // registry entry exists but onboarding never finished — resume it
 }
 function startNewPerson(){ showOnboarding(); }
-function switchAccount(){ renderWho(); }
+function switchAccount(){ if(WellSyncCloud?.user) WellSyncCloud.signOut(); else renderWho(); }
 function deleteCurrentProfile(){
   confirmDo("Delete this person's data — meals, water, weight, everything logged?",()=>{
     const id=REG.activeId;
     try{localStorage.removeItem(perKey(id));}catch(e){}
     REG.people = REG.people.filter(x=>x.id!==id);
     REG.activeId=null; saveRegistry();
-    location.reload();
+    if(WellSyncCloud?.user) WellSyncCloud.deleteState().finally(()=>WellSyncCloud.signOut());
+    else location.reload();
   });
 }
 
@@ -1788,7 +1933,7 @@ function vProfile(){
       <div class="menurow" onclick="toast('Ask WellSync Coach, or email support@wellsync.app')"><span class="ic" style="background:var(--blue-soft)">❓</span>
         <div><b>Help & Support</b><span>Chat with the coach or reach us</span></div><span class="chev">›</span></div>
       <div class="menurow" onclick="switchAccount()"><span class="ic" style="background:var(--rose-soft)">🚪</span>
-        <div><b style="color:var(--rose)">Switch / Log Out</b><span>Back to the "who's this for" screen — data stays saved</span></div><span class="chev">›</span></div>
+        <div><b style="color:var(--rose)">Switch / Log Out</b><span>Sign out of this account. Your cloud data stays safe.</span></div><span class="chev">›</span></div>
     </div>
   </div>
 
@@ -1839,9 +1984,9 @@ function vProfile(){
       <button class="btn ghost sm" onclick="exportData()">Export my data (JSON)</button>
       <button class="btn ghost sm" onclick="seedDemo()">Fill 14 days of sample data</button>
       <button class="btn ghost sm" style="color:var(--rose);border-color:var(--rose)" onclick="deleteCurrentProfile()">Delete my data</button>
-      <button class="btn ghost sm" onclick="switchAccount()">Add / switch person</button>
+      <button class="btn ghost sm" onclick="switchAccount()">Sign out</button>
     </div>
-    <p class="tiny" style="margin-top:12px">Your logs live in this browser's storage. Clearing site data removes them, so export before you switch devices. <a href="javascript:void(0)" onclick="wipeAllProfiles()" style="color:var(--rose)">Reset this device for everyone →</a></p>
+    <p class="tiny" style="margin-top:12px">Your account data is synchronized through Firebase. This browser also keeps an offline cache so you can continue logging without a connection. <a href="javascript:void(0)" onclick="wipeAllProfiles()" style="color:var(--rose)">Reset this device for everyone →</a></p>
   </div>
 
   <div class="hd"><h2>How the numbers are worked out</h2></div>
@@ -1963,24 +2108,100 @@ setInterval(()=>{
   }
 },60000);
 
+
+/* ============ ACCOUNT AUTH ============ */
+let authMode="signin";
+function showAuth(){
+  hide("who"); hide("onb");
+  document.getElementById("app").classList.remove("on");
+  show("auth");
+  if(!WellSyncCloud.configured) document.getElementById("auth-config-note").style.display="block";
+  else document.getElementById("auth-config-note").style.display="none";
+}
+function setAuthMode(mode){
+  authMode=mode;
+  document.getElementById("auth-signin-tab").setAttribute("aria-pressed",mode==="signin");
+  document.getElementById("auth-signup-tab").setAttribute("aria-pressed",mode==="signup");
+  document.getElementById("auth-submit").textContent=mode==="signin"?"Sign in":"Create account";
+  document.getElementById("auth-password").autocomplete=mode==="signin"?"current-password":"new-password";
+  document.getElementById("auth-error").style.display="none";
+}
+function authError(msg){
+  const el=document.getElementById("auth-error"); el.textContent=msg; el.style.display="block";
+}
+async function submitAuth(){
+  if(!WellSyncCloud.configured){authError("Firebase is not configured. Add the Firebase Web App config to index.html first.");return;}
+  const email=document.getElementById("auth-email").value.trim();
+  const password=document.getElementById("auth-password").value;
+  if(!email || !password){authError("Enter your email and password.");return;}
+  if(authMode==="signup" && password.length<6){authError("Use a password with at least 6 characters.");return;}
+  const btn=document.getElementById("auth-submit"); btn.disabled=true;
+  try{
+    if(authMode==="signup") await WellSyncCloud.signUp(email,password);
+    else await WellSyncCloud.signIn(email,password);
+  }catch(e){
+    const map={
+      "auth/email-already-in-use":"An account already exists for this email. Sign in instead.",
+      "auth/invalid-credential":"Email or password is incorrect.",
+      "auth/invalid-email":"Enter a valid email address.",
+      "auth/weak-password":"Use a stronger password (at least 6 characters).",
+      "auth/network-request-failed":"Network error. Check your internet connection."
+    };
+    authError(map[e.code]||e.message||"Authentication failed.");
+  }finally{btn.disabled=false;}
+}
+async function resetPassword(){
+  if(!WellSyncCloud.configured){authError("Firebase is not configured yet.");return;}
+  const email=document.getElementById("auth-email").value.trim();
+  if(!email){authError("Enter your email first.");return;}
+  try{await WellSyncCloud.resetPassword(email);toast("Password reset email sent.");}
+  catch(e){authError(e.message||"Couldn't send the reset email.");}
+}
+window.onWellSyncAuthState = async function(user){
+  if(!user){
+    S=null; REG.activeId=null; showAuth(); return;
+  }
+  hide("auth"); hide("who");
+  // Capture any pre-account local profile before switching the cache key to the Firebase UID.
+  const legacyId=REG.activeId;
+  let legacyState=null;
+  try{ if(legacyId && legacyId!==user.uid){ const raw=localStorage.getItem(perKey(legacyId)); if(raw) legacyState=JSON.parse(raw); } }catch(e){}
+  REG.activeId=user.uid;
+  // Keep the existing device cache as an offline fallback/migration source.
+  loadPerson(user.uid);
+  if(!S.profile && legacyState?.profile){
+    S=legacyState;
+    cacheLocal();
+  }
+  if(!S.profile){
+    S=blank();
+    document.getElementById("o-email").value=user.email||"";
+    showOnboarding(user.uid);
+  }else{
+    document.getElementById("o-email").value=user.email||S.profile.email||"";
+    if(S.settings?.theme && S.settings.theme!=="auto") document.documentElement.setAttribute("data-theme",S.settings.theme);
+    else document.documentElement.removeAttribute("data-theme");
+    enterApp();
+    render();
+  }
+  await syncFromCloud(true);
+  // Keep the account email authoritative.
+  if(S?.profile && user.email && S.profile.email!==user.email){S.profile.email=user.email;save();render();}
+};
+
 /* ---------- boot ---------- */
 renderOnbOptions();
 document.getElementById("o-target").addEventListener("input",previewPlan);
 ["o-age","o-ht","o-wt","o-sex"].forEach(id=>document.getElementById(id).addEventListener("input",previewPlan));
 document.addEventListener("input",e=>{ if(e.target.id==="r-s") rRender(); });
 
-if(REG.people.length===1 && REG.activeId==null) REG.activeId=REG.people[0].id;  // legacy/simple case
-if(REG.activeId){
-  loadPerson(REG.activeId);
-  if(S.settings?.theme && S.settings.theme!=="auto") document.documentElement.setAttribute("data-theme",S.settings.theme);
-  else document.documentElement.removeAttribute("data-theme");
-  if(S.profile && S.goals) enterApp();
-  else showOnboarding(REG.activeId);
-} else if(REG.people.length>0){
-  renderWho();     // several people on this device, none chosen yet
-} else {
-  showOnboarding(); // brand-new device / browser — nobody set up
-}
+(async function bootWellSync(){
+  if(!WellSyncCloud.configured){
+    showAuth();
+    return;
+  }
+  await WellSyncCloud.init();
+})();
 </script>
 <script>
 

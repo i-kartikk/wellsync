@@ -2,9 +2,9 @@
 
 A single-file, installable web app (PWA) — food, water, exercise, step and
 weight tracking with an Indian-first food database, streaks/XP/badges, a
-rule-based coach, and WebGL water/calorie animations. No backend: all data
-lives in the visitor's own browser (`localStorage`), so each install is
-private to that device.
+rule-based coach, and WebGL water/calorie animations. It now supports account
+sign-in with Firebase Authentication and cross-device synchronization through
+Cloud Firestore. `localStorage` remains as an offline cache.
 
 ## Deploy to Vercel (~2 minutes)
 
@@ -29,9 +29,8 @@ vercel --prod          # promote to your production URL
 3. Framework preset **Other**, no build command, output directory `.`.
 4. Deploy. Every push to `main` redeploys automatically.
 
-No environment variables, no database, no serverless functions — it's
-static files only, so any static host works (Netlify, Cloudflare Pages,
-GitHub Pages) if you'd rather not use Vercel. Just make sure `index.html`,
+Firebase is the cloud backend. The frontend remains static, so it can still
+be hosted on Vercel, Netlify, Cloudflare Pages or any HTTPS static host. Just make sure `index.html`,
 `manifest.webmanifest`, `sw.js` and the icon PNGs all sit at the **root**
 of whatever URL you deploy to — the service worker registers at `/sw.js`
 and the manifest at `/manifest.webmanifest`, both absolute paths.
@@ -96,12 +95,45 @@ visitors get the new version on their next load without needing to
 manually clear anything. If you change cached asset filenames, bump
 `CACHE` in `sw.js` (e.g. `wellsync-v2`) so old caches get cleared.
 
+## Firebase setup — required before deployment
+
+1. Create a Firebase project at https://console.firebase.google.com/
+2. Add a **Web app** to the project.
+3. Enable **Authentication → Sign-in method → Email/Password**.
+4. Create a **Firestore Database**.
+5. Open `index.html` and replace the six `PASTE_FIREBASE_*` values in
+   `FIREBASE_CONFIG` with the config Firebase gives you.
+6. In Firestore → Rules, publish:
+
+```text
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId} {
+      allow read, write: if request.auth != null
+                         && request.auth.uid == userId;
+    }
+  }
+}
+```
+
+7. Deploy the folder to Vercel.
+8. Build the Android APK from the native Capacitor project using the same
+   web app/backend configuration.
+
+### Sync model
+
+Firestore is the account source of truth. The browser/device keeps a local
+cache so the app remains usable offline. Changes are uploaded after a short
+debounce, and Firestore listeners update other signed-in devices in near real
+time. Existing local data can be migrated into a newly created account.
+
+**Important:** Firebase Web API keys are not passwords and are normally
+included in client applications. Protect the data with Firestore Security
+Rules; never put service-account/private keys in this frontend.
+
 ## What this is not
 
-There's no backend, no accounts, no server-side database — by design,
-per the earlier build notes. Data is per-browser `localStorage`, so a
-user's logs don't follow them from phone to laptop, and clearing site
-data deletes them (there's an Export-to-JSON button in Settings for
-backups). If you want real accounts and cross-device sync later, that
-needs an actual backend (e.g. FastAPI + Postgres, as in the original
-spec) behind this same frontend.
+It is not a multi-user anonymous local-storage system anymore. A user's
+cross-device identity is their Firebase account. Export-to-JSON remains
+available as a backup.

@@ -1,4 +1,4 @@
-const CACHE = "wellsync-v1";
+const CACHE = "wellsync-v2-cloud";
 const ASSETS = [
   "/",
   "/index.html",
